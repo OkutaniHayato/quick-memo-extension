@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Quick Memo Sidebar",
+  "version": "1.0.0",
+  "description": "左サイドバーでページを切り替えられるシンプルな同期メモ",
+  "permissions": ["storage"],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
