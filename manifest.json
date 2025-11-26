@@ -1,9 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Quick Memo Sidebar",
+  "name": "Quick Memo Sync",
   "version": "1.0.0",
-  "description": "左サイドバーでページを切り替えられるシンプルな同期メモ",
+  "description": "Googleスプレッドシート(GAS)でPC間同期するメモ",
   "permissions": ["storage"],
+  "host_permissions": [
+    "https://script.google.com/macros/s/*"
+  ],
   "action": {
     "default_popup": "popup.html"
   }

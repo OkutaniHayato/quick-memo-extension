@@ -1,3 +1,7 @@
+// ===== ここがあなたのGASのURL =====
+const API_URL = "https://script.google.com/macros/s/AKfycbwc5xif9jmcMor8L-sA6y1YuQ68U8Rsh8AyfqFJkjGPlAiajCdDgkEV8lYIAUb2OcTwRQ/exec";
+// ===================================
+
 const MAX_PAGES = 30;
 const MIN_PAGES = 1;
 
@@ -28,6 +32,68 @@ function ensurePagesValid(arr) {
   }));
 }
 
+// ---------- GAS と通信 ----------
+async function loadRemoteMemo() {
+  status.textContent = "オンラインから読み込み中…";
+  try {
+    const res = await fetch(API_URL, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`GET failed: ${res.status}`);
+    const json = await res.json();
+
+    const remotePages = json.pages;
+    const remoteIndex = json.currentPage;
+
+    pages = ensurePagesValid(remotePages);
+    if (
+      typeof remoteIndex === "number" &&
+      remoteIndex >= 0 &&
+      remoteIndex < pages.length
+    ) {
+      currentPage = remoteIndex;
+    } else {
+      currentPage = 0;
+    }
+
+    status.textContent = "同期データ取得完了";
+    setTimeout(() => (status.textContent = ""), 800);
+  } catch (e) {
+    console.error(e);
+    pages = [createEmptyPage()];
+    currentPage = 0;
+    status.textContent = "読み込み失敗。空データで開始します。";
+    setTimeout(() => (status.textContent = ""), 1500);
+  }
+}
+
+async function saveRemoteMemo(showMessage = false) {
+  saveCurrentPageToMemory();
+
+  const payload = {
+    pages,
+    currentPage,
+  };
+
+  try {
+    await fetch(API_URL, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    if (showMessage) {
+      status.textContent = "保存しました（全PC同期）";
+      saveBtn.textContent = "保存済み";
+      setTimeout(() => {
+        status.textContent = "";
+        saveBtn.textContent = "保存";
+      }, 800);
+    }
+  } catch (e) {
+    console.error(e);
+    status.textContent = "保存失敗（ネットワークエラー）";
+    setTimeout(() => (status.textContent = ""), 1500);
+  }
+}
+
 // ---------- UI ----------
 function renderTabs() {
   tabsContainer.innerHTML = "";
@@ -35,20 +101,16 @@ function renderTabs() {
   pages.forEach((page, index) => {
     const btn = document.createElement("button");
     btn.className = "tab-btn" + (index === currentPage ? " active" : "");
-
     const label =
       page.title && page.title.trim().length > 0
         ? page.title.trim()
         : `ページ ${index + 1}`;
-
     btn.textContent = label;
     btn.title = label;
-    btn.dataset.index = String(index);
     btn.addEventListener("click", () => switchPage(index));
     tabsContainer.appendChild(btn);
   });
 
-  // −ボタン制御
   tabRemoveBtn.disabled = pages.length <= MIN_PAGES;
   tabRemoveBtn.style.opacity = pages.length <= MIN_PAGES ? 0.5 : 1;
 }
@@ -67,27 +129,6 @@ function saveCurrentPageToMemory() {
   pages[currentPage].body = memoArea.value || "";
 }
 
-// ---------- 永続化（chrome.storage.sync） ----------
-function saveAllToStorage(showMessage = false) {
-  saveCurrentPageToMemory();
-
-  chrome.storage.sync.set(
-    { memoPages: pages, currentPage: currentPage },
-    () => {
-      if (showMessage) {
-        status.textContent = "保存しました（同期されます）";
-        saveBtn.textContent = "保存済み";
-        setTimeout(() => {
-          status.textContent = "";
-          saveBtn.textContent = "保存";
-        }, 1000);
-      }
-      // タイトル変更があったときのため再描画
-      renderTabs();
-    }
-  );
-}
-
 // ---------- ページ操作 ----------
 function switchPage(newIndex) {
   if (newIndex === currentPage) return;
@@ -95,11 +136,9 @@ function switchPage(newIndex) {
 
   saveCurrentPageToMemory();
   currentPage = newIndex;
-
   renderTabs();
   loadPageToUI(currentPage);
-
-  chrome.storage.sync.set({ memoPages: pages, currentPage: currentPage });
+  saveRemoteMemo(false);
 }
 
 function addPage() {
@@ -112,35 +151,32 @@ function addPage() {
   saveCurrentPageToMemory();
   pages.push(createEmptyPage());
   currentPage = pages.length - 1;
-
   renderTabs();
   loadPageToUI(currentPage);
-  saveAllToStorage(false);
+  saveRemoteMemo(false);
 }
 
 function removeCurrentPage() {
   if (pages.length <= MIN_PAGES) return;
 
   pages.splice(currentPage, 1);
-
   if (currentPage >= pages.length) {
     currentPage = pages.length - 1;
   }
-
   renderTabs();
   loadPageToUI(currentPage);
-  saveAllToStorage(false);
+  saveRemoteMemo(false);
 }
 
 // ---------- イベント ----------
 saveBtn.addEventListener("click", () => {
-  saveAllToStorage(true);
+  saveRemoteMemo(true);
 });
 
 function scheduleAutosave() {
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
-    saveAllToStorage(false);
+    saveRemoteMemo(false);
   }, 800);
 }
 
@@ -151,21 +187,8 @@ tabAddBtn.addEventListener("click", addPage);
 tabRemoveBtn.addEventListener("click", removeCurrentPage);
 
 // ---------- 初期化 ----------
-chrome.storage.sync.get(["memoPages", "currentPage"], (result) => {
-  pages = ensurePagesValid(result.memoPages);
-
-  if (
-    typeof result.currentPage === "number" &&
-    result.currentPage >= 0 &&
-    result.currentPage < pages.length
-  ) {
-    currentPage = result.currentPage;
-  } else {
-    currentPage = 0;
-  }
-
+(async () => {
+  await loadRemoteMemo();
   renderTabs();
   loadPageToUI(currentPage);
-  status.textContent = "読み込み完了";
-  setTimeout(() => (status.textContent = ""), 800);
-});
+})();
