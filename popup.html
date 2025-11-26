@@ -16,7 +16,7 @@
     }
 
     .app {
-      width: 760px; /* 二回りくらい大きく */
+      width: 760px;
       height: 520px;
       margin: 0 auto;
       background: #ffffff;
@@ -125,27 +125,25 @@
       margin-bottom: 8px;
     }
 
-    .header-row label {
-      font-size: 13px;
-      white-space: nowrap;
-      color: #374151;
-    }
-
+    /* タイトル入力：メモアプリ風＋R=8でメモと揃える */
     #title {
-      flex: 1;
-      font-size: 13px;
-      padding: 6px 8px;
+      width: 100%;
+      padding: 8px 12px;
       border-radius: 8px;
-      border: 1px solid #d1d5db;
+      border: 1px solid #e5e7eb;
+      background: #f9fafb;
+      font-size: 14px;
     }
 
     #memo {
       width: 100%;
       flex: 1;
-      min-height: 280px;
-      resize: none;
-      font-size: 13px;
-      padding: 8px;
+      min-height: 120px;
+      resize: vertical;  /* 縦方向のサイズ変更を許可 */
+      overflow: auto;    /* 小さくしたときにも中身が崩れないように */
+      font-size: 14px;
+      padding: 12px;
+      line-height: 1.8;
       border-radius: 8px;
       border: 1px solid #d1d5db;
     }
@@ -188,8 +186,7 @@
 
     <div class="content">
       <div class="header-row">
-        <label for="title">タイトル</label>
-        <input id="title" type="text" placeholder="このページのタイトル" />
+        <input id="title" type="text" placeholder="タイトルを入力…" />
       </div>
       <textarea id="memo" placeholder="ここにメモを書く…"></textarea>
       <div class="bottom-row">
@@ -199,7 +196,7 @@
     </div>
   </div>
 
-  <!-- 同期ロジックは全部 popup.js 側 -->
+  <!-- 同期・ロジックは popup.js 側に全部書く -->
   <script src="popup.js"></script>
 </body>
 </html>
