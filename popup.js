@@ -23,9 +23,7 @@ const tabRemoveBtn = document.getElementById("tabRemove");
 let pages = [];
 let currentPage = 0;
 let autosaveTimer = null;
-
-// ★ このポップアップを開いてからユーザーが編集したかどうか
-let hasUserEdited = false;
+let isSyncing = false; // ★ 初回同期中かどうか
 
 // ---------- モデル ----------
 function createEmptyPage() {
@@ -72,8 +70,26 @@ function loadFromLocalCache() {
   }
 }
 
-// ---------- GAS と通信 ----------
-async function loadRemoteMemo() {
+// ---------- 同期中ロック制御（初回のみ使う） ----------
+function setSyncing(syncing, message) {
+  isSyncing = syncing;
+
+  titleInput.disabled = syncing;
+  memoArea.disabled = syncing;
+  saveBtn.disabled = syncing;
+  tabAddBtn.disabled = syncing;
+  tabRemoveBtn.disabled = syncing;
+
+  if (syncing) {
+    status.textContent = message || "同期中…";
+  } else {
+    status.textContent = "";
+    saveBtn.textContent = "保存";
+  }
+}
+
+// ---------- GAS から読み込み（起動時のみ呼ぶ） ----------
+async function loadRemoteMemoOnce() {
   try {
     const res = await fetch(API_URL, { cache: "no-cache" });
     const text = await res.text(); // まずテキストで受ける
@@ -99,14 +115,6 @@ async function loadRemoteMemo() {
       remoteIndex = 0;
     }
 
-    // ★ すでにユーザーが編集中なら、リモートを適用しない
-    if (hasUserEdited) {
-      console.info("編集中のためオンライン更新をスキップ");
-      status.textContent = "編集中のためオンライン同期をスキップしました。";
-      setTimeout(() => (status.textContent = ""), 1200);
-      return;
-    }
-
     // ローカルと同じなら UI 更新なし
     const localJson = JSON.stringify({ pages, currentPage });
     const remoteJson = JSON.stringify({
@@ -120,7 +128,7 @@ async function loadRemoteMemo() {
       return;
     }
 
-    // オンラインの方を採用（※この時点では hasUserEdited は false）
+    // オンラインを採用
     pages = remotePages;
     currentPage = remoteIndex;
     updateLocalCache();
@@ -138,8 +146,9 @@ async function loadRemoteMemo() {
   }
 }
 
+// ---------- GAS へ保存（常に非ブロッキング） ----------
 async function saveRemoteMemo(showMessage = false) {
-  // まずローカル状態に反映
+  // 初回同期中でも保存は飛ばさない（POSTは軽いので許容）
   saveCurrentPageToMemory();
   updateLocalCache();
 
@@ -153,9 +162,6 @@ async function saveRemoteMemo(showMessage = false) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-
-    // リモートもローカルと一致したので、一旦「未保存状態」フラグをクリア
-    hasUserEdited = false;
 
     if (showMessage) {
       status.textContent = "保存しました（全PC同期）";
@@ -191,8 +197,9 @@ function renderTabs() {
     tabsContainer.appendChild(btn);
   });
 
-  tabRemoveBtn.disabled = pages.length <= MIN_PAGES;
-  tabRemoveBtn.style.opacity = pages.length <= MIN_PAGES ? 0.5 : 1;
+  tabRemoveBtn.disabled = pages.length <= MIN_PAGES || isSyncing;
+  tabRemoveBtn.style.opacity = tabRemoveBtn.disabled ? 0.5 : 1;
+  tabAddBtn.disabled = pages.length >= MAX_PAGES || isSyncing;
 }
 
 function loadPageToUI(index) {
@@ -211,19 +218,21 @@ function saveCurrentPageToMemory() {
 
 // ---------- ページ操作 ----------
 function switchPage(newIndex) {
+  if (isSyncing) return; // 初回同期中は触らせない
   if (newIndex === currentPage) return;
   if (newIndex < 0 || newIndex >= pages.length) return;
 
   saveCurrentPageToMemory();
   currentPage = newIndex;
-  hasUserEdited = true;          // ★ ページ切替も編集とみなす
   renderTabs();
   loadPageToUI(currentPage);
   updateLocalCache();
+  // 構造変化だけでも一応同期しておく（非ブロッキング）
   saveRemoteMemo(false);
 }
 
 function addPage() {
+  if (isSyncing) return;
   if (pages.length >= MAX_PAGES) {
     status.textContent = `最大 ${MAX_PAGES} ページまでです。`;
     setTimeout(() => (status.textContent = ""), 1500);
@@ -233,33 +242,34 @@ function addPage() {
   saveCurrentPageToMemory();
   pages.push(createEmptyPage());
   currentPage = pages.length - 1;
-  hasUserEdited = true;          // ★ 新規ページ追加も編集
   renderTabs();
   loadPageToUI(currentPage);
+  updateLocalCache();
   saveRemoteMemo(false);
 }
 
 function removeCurrentPage() {
+  if (isSyncing) return;
   if (pages.length <= MIN_PAGES) return;
 
   pages.splice(currentPage, 1);
   if (currentPage >= pages.length) {
     currentPage = pages.length - 1;
   }
-  hasUserEdited = true;          // ★ 削除も編集
   renderTabs();
   loadPageToUI(currentPage);
+  updateLocalCache();
   saveRemoteMemo(false);
 }
 
 // ---------- イベント ----------
 saveBtn.addEventListener("click", () => {
-  hasUserEdited = true;
+  if (isSyncing) return; // 初回同期中は押させない
   saveRemoteMemo(true);
 });
 
 function scheduleAutosave() {
-  hasUserEdited = true;          // ★ 入力があれば即「編集中」
+  if (isSyncing) return; // 初回同期中の打鍵はそもそもできない想定だが保険
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
     saveRemoteMemo(false);
@@ -274,16 +284,17 @@ tabRemoveBtn.addEventListener("click", removeCurrentPage);
 
 // ---------- 初期化 ----------
 async function init() {
-  // 1. まずローカルキャッシュを読み込んで即表示
+  // 1. ローカルキャッシュを即表示
   loadFromLocalCache();
   renderTabs();
   loadPageToUI(currentPage);
 
-  status.textContent = "ローカルキャッシュ読み込み完了";
-  setTimeout(() => (status.textContent = ""), 600);
+  // 2. 初回同期が終わるまでロック
+  setSyncing(true, "オンラインと同期中…");
+  await loadRemoteMemoOnce();
+  setSyncing(false);
 
-  // 2. 裏でオンライン同期
-  await loadRemoteMemo();
+  // ここから先はロック無しで運用（保存はすべてバックグラウンドPOST）
 }
 
 // 実行
