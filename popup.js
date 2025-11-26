@@ -1,10 +1,16 @@
-// ===== ここがあなたのGASのURL =====
-const API_URL = "https://script.google.com/macros/s/AKfycbwc5xif9jmcMor8L-sA6y1YuQ68U8Rsh8AyfqFJkjGPlAiajCdDgkEV8lYIAUb2OcTwRQ/exec";
+// ===== あなたのGAS WebアプリURL =====
+const API_URL =
+  "https://script.google.com/macros/s/AKfycbwc5xif9jmcMor8L-sA6y1YuQ68U8Rsh8AyfqFJkjGPlAiajCdDgkEV8lYIAUb2OcTwRQ/exec";
 // ===================================
 
 const MAX_PAGES = 30;
 const MIN_PAGES = 1;
 
+// ローカルキャッシュ用キー
+const CACHE_PAGES_KEY = "quickMemoCache";
+const CACHE_INDEX_KEY = "quickMemoCurrentPageCache";
+
+// DOM取得
 const tabsContainer = document.getElementById("tabs");
 const titleInput = document.getElementById("title");
 const memoArea = document.getElementById("memo");
@@ -13,9 +19,13 @@ const status = document.getElementById("status");
 const tabAddBtn = document.getElementById("tabAdd");
 const tabRemoveBtn = document.getElementById("tabRemove");
 
+// 状態
 let pages = [];
 let currentPage = 0;
 let autosaveTimer = null;
+
+// ★ このポップアップを開いてからユーザーが編集したかどうか
+let hasUserEdited = false;
 
 // ---------- モデル ----------
 function createEmptyPage() {
@@ -32,41 +42,106 @@ function ensurePagesValid(arr) {
   }));
 }
 
+// ---------- ローカルキャッシュ ----------
+function updateLocalCache() {
+  try {
+    localStorage.setItem(CACHE_PAGES_KEY, JSON.stringify(pages));
+    localStorage.setItem(CACHE_INDEX_KEY, String(currentPage));
+  } catch (e) {
+    console.warn("localStorage への保存に失敗:", e);
+  }
+}
+
+function loadFromLocalCache() {
+  let cachePages = null;
+  try {
+    cachePages = JSON.parse(localStorage.getItem(CACHE_PAGES_KEY) || "null");
+  } catch {
+    cachePages = null;
+  }
+
+  pages = ensurePagesValid(cachePages);
+
+  const cacheIndexRaw = localStorage.getItem(CACHE_INDEX_KEY);
+  const cacheIndex = cacheIndexRaw != null ? parseInt(cacheIndexRaw, 10) : 0;
+
+  if (!Number.isNaN(cacheIndex) && cacheIndex >= 0 && cacheIndex < pages.length) {
+    currentPage = cacheIndex;
+  } else {
+    currentPage = 0;
+  }
+}
+
 // ---------- GAS と通信 ----------
 async function loadRemoteMemo() {
-  status.textContent = "オンラインから読み込み中…";
   try {
     const res = await fetch(API_URL, { cache: "no-cache" });
-    if (!res.ok) throw new Error(`GET failed: ${res.status}`);
-    const json = await res.json();
+    const text = await res.text(); // まずテキストで受ける
 
-    const remotePages = json.pages;
-    const remoteIndex = json.currentPage;
-
-    pages = ensurePagesValid(remotePages);
-    if (
-      typeof remoteIndex === "number" &&
-      remoteIndex >= 0 &&
-      remoteIndex < pages.length
-    ) {
-      currentPage = remoteIndex;
-    } else {
-      currentPage = 0;
+    let remote;
+    try {
+      remote = JSON.parse(text);
+    } catch (parseErr) {
+      console.warn(
+        "GASからJSON以外のレスポンスが返っています:",
+        text.slice(0, 80)
+      );
+      status.textContent =
+        "オンラインデータ形式エラー。ローカルキャッシュを使用します。";
+      setTimeout(() => (status.textContent = ""), 1500);
+      return;
     }
 
-    status.textContent = "同期データ取得完了";
+    const remotePages = ensurePagesValid(remote.pages);
+    let remoteIndex =
+      typeof remote.currentPage === "number" ? remote.currentPage : 0;
+    if (remoteIndex < 0 || remoteIndex >= remotePages.length) {
+      remoteIndex = 0;
+    }
+
+    // ★ すでにユーザーが編集中なら、リモートを適用しない
+    if (hasUserEdited) {
+      console.info("編集中のためオンライン更新をスキップ");
+      status.textContent = "編集中のためオンライン同期をスキップしました。";
+      setTimeout(() => (status.textContent = ""), 1200);
+      return;
+    }
+
+    // ローカルと同じなら UI 更新なし
+    const localJson = JSON.stringify({ pages, currentPage });
+    const remoteJson = JSON.stringify({
+      pages: remotePages,
+      currentPage: remoteIndex,
+    });
+
+    if (localJson === remoteJson) {
+      status.textContent = "オンラインとローカルは同じ状態です。";
+      setTimeout(() => (status.textContent = ""), 800);
+      return;
+    }
+
+    // オンラインの方を採用（※この時点では hasUserEdited は false）
+    pages = remotePages;
+    currentPage = remoteIndex;
+    updateLocalCache();
+
+    renderTabs();
+    loadPageToUI(currentPage);
+
+    status.textContent = "オンラインデータ同期完了";
     setTimeout(() => (status.textContent = ""), 800);
   } catch (e) {
-    console.error(e);
-    pages = [createEmptyPage()];
-    currentPage = 0;
-    status.textContent = "読み込み失敗。空データで開始します。";
+    console.warn("オンライン読み込みエラー:", e);
+    status.textContent =
+      "オンライン読み込みに失敗。ローカルキャッシュを使用します。";
     setTimeout(() => (status.textContent = ""), 1500);
   }
 }
 
 async function saveRemoteMemo(showMessage = false) {
+  // まずローカル状態に反映
   saveCurrentPageToMemory();
+  updateLocalCache();
 
   const payload = {
     pages,
@@ -79,6 +154,9 @@ async function saveRemoteMemo(showMessage = false) {
       body: JSON.stringify(payload),
     });
 
+    // リモートもローカルと一致したので、一旦「未保存状態」フラグをクリア
+    hasUserEdited = false;
+
     if (showMessage) {
       status.textContent = "保存しました（全PC同期）";
       saveBtn.textContent = "保存済み";
@@ -88,9 +166,11 @@ async function saveRemoteMemo(showMessage = false) {
       }, 800);
     }
   } catch (e) {
-    console.error(e);
-    status.textContent = "保存失敗（ネットワークエラー）";
-    setTimeout(() => (status.textContent = ""), 1500);
+    console.warn("オンライン保存エラー:", e);
+    if (showMessage) {
+      status.textContent = "保存失敗（ネットワークエラー）";
+      setTimeout(() => (status.textContent = ""), 1500);
+    }
   }
 }
 
@@ -136,8 +216,10 @@ function switchPage(newIndex) {
 
   saveCurrentPageToMemory();
   currentPage = newIndex;
+  hasUserEdited = true;          // ★ ページ切替も編集とみなす
   renderTabs();
   loadPageToUI(currentPage);
+  updateLocalCache();
   saveRemoteMemo(false);
 }
 
@@ -151,6 +233,7 @@ function addPage() {
   saveCurrentPageToMemory();
   pages.push(createEmptyPage());
   currentPage = pages.length - 1;
+  hasUserEdited = true;          // ★ 新規ページ追加も編集
   renderTabs();
   loadPageToUI(currentPage);
   saveRemoteMemo(false);
@@ -163,6 +246,7 @@ function removeCurrentPage() {
   if (currentPage >= pages.length) {
     currentPage = pages.length - 1;
   }
+  hasUserEdited = true;          // ★ 削除も編集
   renderTabs();
   loadPageToUI(currentPage);
   saveRemoteMemo(false);
@@ -170,10 +254,12 @@ function removeCurrentPage() {
 
 // ---------- イベント ----------
 saveBtn.addEventListener("click", () => {
+  hasUserEdited = true;
   saveRemoteMemo(true);
 });
 
 function scheduleAutosave() {
+  hasUserEdited = true;          // ★ 入力があれば即「編集中」
   if (autosaveTimer) clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
     saveRemoteMemo(false);
@@ -187,8 +273,18 @@ tabAddBtn.addEventListener("click", addPage);
 tabRemoveBtn.addEventListener("click", removeCurrentPage);
 
 // ---------- 初期化 ----------
-(async () => {
-  await loadRemoteMemo();
+async function init() {
+  // 1. まずローカルキャッシュを読み込んで即表示
+  loadFromLocalCache();
   renderTabs();
   loadPageToUI(currentPage);
-})();
+
+  status.textContent = "ローカルキャッシュ読み込み完了";
+  setTimeout(() => (status.textContent = ""), 600);
+
+  // 2. 裏でオンライン同期
+  await loadRemoteMemo();
+}
+
+// 実行
+init();
